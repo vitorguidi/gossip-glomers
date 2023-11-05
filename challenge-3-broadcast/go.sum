@@ -1,0 +1,4 @@
+github.com/beevik/guid v1.0.0 h1:XhTlrl9h5+TlkB7MB3SBwAm2+ZdFE62O0D+g7LDFqqI=
+github.com/beevik/guid v1.0.0/go.mod h1:FyB4y08P/8c0J0xhRHR6xVjdXIpGDwpMXzmGV6vWDj4=
+github.com/jepsen-io/maelstrom/demo/go v0.0.0-20231031014016-1815896cad51 h1:Z8j/O9ZaY1Qn61gL1TsXDo3IX8CWHkHPVwSw/2gKw1M=
+github.com/jepsen-io/maelstrom/demo/go v0.0.0-20231031014016-1815896cad51/go.mod h1:i6aVIs5AIOOaQF1lAisBm7DDeWM1Iopf+26UxjagsCU=
