@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
@@ -21,23 +22,27 @@ Idea:
 */
 
 const (
-	neighbourSpreadFactor = 3
-	gossipInterval        = time.Millisecond * 100
-	rpcTimeoutInterval    = time.Millisecond * 200
+	gossipInterval     = time.Millisecond * 50
+	rpcTimeoutInterval = time.Millisecond * 150
+	rpcRetries         = 3
 )
 
 type Server struct {
-	node               *maelstrom.Node
-	allNodes           []string
-	messageBuffer      map[float64]struct{}
-	messageSeenByNodes map[float64][]string
-	receivedMessages   []float64
-	messagesMut        sync.Mutex
+	node             *maelstrom.Node
+	allNodes         []string
+	messageBuffer    map[float64]struct{}
+	receivedMessages []float64
+	messagesMut      sync.Mutex
 }
 
 func newServer() *Server {
 	var maelstromNode = maelstrom.NewNode()
-	server := &Server{node: maelstromNode}
+	server := &Server{
+		node:             maelstromNode,
+		messageBuffer:    make(map[float64]struct{}),
+		receivedMessages: make([]float64, 0),
+		allNodes:         maelstromNode.NodeIDs(),
+	}
 	maelstromNode.Handle("read", server.handleRead)
 	maelstromNode.Handle("topology", server.handleTopology)
 	maelstromNode.Handle("broadcast", server.handleBroadcast)
@@ -46,10 +51,18 @@ func newServer() *Server {
 
 func main() {
 	server := newServer()
+	go func() {
+		select {
+		case <-time.Tick(gossipInterval):
+			server.batchBroadcast()
+		}
+	}()
+
 	if err := server.node.Run(); err != nil {
 		log.Printf("ERROR: %s", err)
 		os.Exit(1)
 	}
+
 	// Execute the node's message loop. This will run until STDIN is closed.
 
 }
@@ -61,10 +74,11 @@ func (server *Server) handleRead(msg maelstrom.Message) error {
 	}
 	server.messagesMut.Lock()
 	defer server.messagesMut.Unlock()
-	body["type"] = "read_ok"
-	body["messages"] = server.receivedMessages
 	// Echo the original message back with the updated message type.
-	return server.node.Reply(msg, body)
+	return server.node.Reply(msg, map[string]any{
+		"type":     "read_ok",
+		"messages": server.receivedMessages,
+	})
 }
 
 func (server *Server) handleBroadcast(msg maelstrom.Message) error {
@@ -73,15 +87,43 @@ func (server *Server) handleBroadcast(msg maelstrom.Message) error {
 		return err
 	}
 	server.messagesMut.Lock()
-	defer server.messagesMut.Unlock()
 
-	msgId := body["message"].(float64)
-	server.receivedMessages = append(server.receivedMessages, msgId)
+	//handle cases separate => has message = jepsen bombarding us
+	// has messages => me saving network bandwith by batching
 
-	body["type"] = "broadcast_ok"
-	delete(body, "message")
+	messageField, foundMessageField := body["message"]
 
-	return server.node.Reply(msg, body)
+	if foundMessageField && messageField != nil {
+		msgId := body["message"].(float64)
+		_, messageHasBeenReceivedBefore := server.messageBuffer[msgId]
+		if !messageHasBeenReceivedBefore {
+			server.receivedMessages = append(server.receivedMessages, msgId)
+			server.messageBuffer[msgId] = struct{}{}
+		}
+	}
+
+	messagesField, foundMessagesField := body["messages"]
+
+	if foundMessagesField && messagesField != nil {
+		msgList := body["messages"].([]any)
+		for _, msgId := range msgList {
+			_, messageHasBeenReceivedBefore := server.messageBuffer[msgId.(float64)]
+			if !messageHasBeenReceivedBefore {
+				server.receivedMessages = append(server.receivedMessages, msgId.(float64))
+				server.messageBuffer[msgId.(float64)] = struct{}{}
+			}
+		}
+	}
+
+	server.messagesMut.Unlock()
+
+	go func() {
+		server.batchBroadcast()
+	}()
+
+	return server.node.Reply(msg, map[string]any{
+		"type": "broadcast_ok",
+	})
 }
 
 // not using topology, we can assume that all nodes are connected and work from this
@@ -94,10 +136,37 @@ func (server *Server) handleTopology(msg maelstrom.Message) error {
 	return server.node.Reply(msg, map[string]any{"type": "topology_ok"})
 }
 
-func setComplement(seenNodes []string, allNodes []string) {
-	//saudade dos streams de java =(
+func (server *Server) batchBroadcast() {
+	server.messagesMut.Lock()
+	defer server.messagesMut.Unlock()
+	wg := sync.WaitGroup{}
+	neighbours := server.node.NodeIDs()
+	msg := map[string]any{
+		"type":     "broadcast",
+		"messages": server.receivedMessages,
+	}
+	wg.Add(len(neighbours))
+	for _, n := range neighbours {
+		dst := n
+		go func() {
+			defer wg.Done()
+			server.rpcWithRetry(dst, msg)
+		}()
+	}
+	wg.Wait()
 }
 
-func pickAtMostNAtRandom(candidates []string, n int) []string {
-	return nil
+func (server *Server) rpcWithRetry(dst string, msg map[string]any) {
+	for i := 0; i < rpcRetries; i++ {
+		if err := server.rpc(dst, msg); err == nil {
+			break
+		}
+	}
+}
+
+func (server *Server) rpc(dst string, msg map[string]any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeoutInterval)
+	defer cancel()
+	_, err := server.node.SyncRPC(ctx, dst, msg)
+	return err
 }
