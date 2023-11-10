@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	rpcTimeoutInterval = time.Millisecond * 150
+	rpcTimeoutInterval = time.Millisecond * 500
 	rpcRetries         = 3
 )
 
@@ -77,6 +77,7 @@ type SendReply struct {
 func (server *Server) handleSend(msg maelstrom.Message) error {
 	var body SendRequest
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		log.Errorf("Failed to unmarshall send request from node %s to node %s. error: %s", msg.Src, msg.Dest, err)
 		return err
 	}
 
@@ -91,16 +92,18 @@ func (server *Server) handleSend(msg maelstrom.Message) error {
 			"key":  body.Key,
 		})
 		if err != nil {
+			log.Errorf("Failed to send from node %s to node %s. error: %s", server.node.ID(), targetNode, err)
 			return err
 		}
+		log.Errorf("Successfully sent from node %s to node %s. error: %s", server.node.ID(), targetNode, err)
 		var resBody map[string]any
 		if err = json.Unmarshal(reply.Body, &resBody); err != nil {
+			log.Errorf("Failed to unmarshall send response from node %s to node %s. error: %s", server.node.ID(), targetNode, err)
 			return err
 		}
-		offSet = resBody["offset"].(int)
+		offSet = int(resBody["offset"].(float64))
 	} else {
 		server.mu.Lock()
-		defer server.mu.Unlock()
 
 		nextOffset := server.latestOffsets[body.Key]
 		if len(server.logs[body.Key]) > 0 {
@@ -110,6 +113,7 @@ func (server *Server) handleSend(msg maelstrom.Message) error {
 		server.logs[body.Key] = append(server.logs[body.Key], Entry{offset: nextOffset, message: body.Msg})
 		server.latestOffsets[body.Key] = nextOffset
 		offSet = nextOffset
+		server.mu.Unlock()
 	}
 
 	return server.node.Reply(msg, SendReply{Type: "send_ok", Offset: offSet})
@@ -128,6 +132,7 @@ type PollReply struct {
 func (server *Server) handlePoll(msg maelstrom.Message) error {
 	var body PollRequest
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		log.Errorf("Failed to unmarshall poll reuqest from node %s to node %s. error: %s", msg.Src, msg.Dest, err)
 		return err
 	}
 
@@ -147,8 +152,10 @@ func (server *Server) handlePoll(msg maelstrom.Message) error {
 				"offsets": keysAndOffset,
 			})
 			if err != nil {
+				log.Errorf("Failed to poll from node %s to node %s. error: %s", server.node.ID(), node, err)
 				return err
 			}
+			log.Errorf("Successfully pollied from node %s to node %s. error: %s", server.node.ID(), node, err)
 			var resBody PollReply
 			if err = json.Unmarshal(reply.Body, &resBody); err != nil {
 				return err
@@ -160,7 +167,6 @@ func (server *Server) handlePoll(msg maelstrom.Message) error {
 			}
 		}
 	}
-
 	return server.node.Reply(msg, PollReply{Type: "poll_ok", Messages: answer})
 }
 
@@ -186,6 +192,7 @@ type ListCommitedOffsetsResponse struct {
 func (server *Server) handleListCommitedOffsets(msg maelstrom.Message) error {
 	var body ListCommitedOffsetsRequest
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		log.Errorf("Failed to unmarshall list request from node %s to node %s. error: %s", msg.Src, msg.Dest, err)
 		return err
 	}
 
@@ -203,26 +210,32 @@ func (server *Server) handleListCommitedOffsets(msg maelstrom.Message) error {
 
 	for node, keys := range keyOffSetsByNode {
 		if node == server.node.ID() {
-			server.mu.Lock()
 			for _, key := range keys {
+				_, found := server.committedOffsets[key]
+				if !found {
+					continue
+				}
 				answer[key] = server.committedOffsets[key]
 			}
-			server.mu.Unlock()
 		} else {
 			reply, err := server.rpc(node, map[string]any{
-				"type":    "list_commited_offsets",
-				"offsets": keys,
+				"type": "list_committed_offsets",
+				"keys": keys,
 			})
 			if err != nil {
+				log.Errorf("Failed to fetch remote commited offsets from node %s to node %s. error: %s", server.node.ID(), node, err)
 				return err
 			}
+			log.Errorf("Successfully fetched commited offsets from node %s to node %s. error: %s", server.node.ID(), node, err)
 			var resBody ListCommitedOffsetsResponse
 			if err = json.Unmarshal(reply.Body, &resBody); err != nil {
+				log.Errorf("Failed to unmarshall commited offsets response from node %s to node %s. error: %s", server.node.ID(), node, err)
 				return err
 			}
 			for key, offSet := range resBody.Offsets {
 				answer[key] = offSet
 			}
+			log.Errorf("Successfully fetched remote commited offsets from node %s to node %s", server.node.ID(), node)
 		}
 	}
 
@@ -241,6 +254,7 @@ type CommitOffsetsResponse struct {
 func (server *Server) handleCommitOffsets(msg maelstrom.Message) error {
 	var body CommitOffsetsRequest
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		log.Errorf("Failed to unmarshall commited offsets request from node %s to node %s. error: %s", msg.Src, msg.Dest, err)
 		return err
 	}
 
@@ -249,12 +263,14 @@ func (server *Server) handleCommitOffsets(msg maelstrom.Message) error {
 	for node, commitedOffSets := range offSetsSplitByNode {
 		if node != server.node.ID() {
 			_, err := server.rpc(node, map[string]any{
-				"type":    "commit_offsets",
-				"offsets": commitedOffSets,
+				"type": "commit_offsets",
+				"keys": commitedOffSets,
 			})
 			if err != nil {
+				log.Errorf("Failed to commit offsets from node %s to node %s. error: %s", server.node.ID(), node, err)
 				return err
 			}
+			log.Errorf("Successfully commited offsets from node %s to node %s. error: %s", server.node.ID(), node, err)
 			//nothing fancy to do here, if we succeed we know all is gucci on the downstream
 		} else {
 			server.mu.Lock()
@@ -270,21 +286,6 @@ func (server *Server) handleCommitOffsets(msg maelstrom.Message) error {
 	return server.node.Reply(msg, CommitOffsetsResponse{Type: "commit_offsets_ok"})
 }
 
-func (server *Server) rpcWithRetry(dst string, msg map[string]any) (maelstrom.Message, error) {
-	var answer maelstrom.Message
-	var err error
-	for i := 0; i < rpcRetries; i++ {
-		answer, err = server.rpc(dst, msg)
-		if err == nil {
-			break
-		}
-	}
-	return answer, err
-
-}
-
 func (server *Server) rpc(dst string, msg map[string]any) (maelstrom.Message, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeoutInterval)
-	defer cancel()
-	return server.node.SyncRPC(ctx, dst, msg)
+	return server.node.SyncRPC(context.Background(), dst, msg)
 }
