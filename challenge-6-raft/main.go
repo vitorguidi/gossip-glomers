@@ -58,13 +58,11 @@ func (s *Server) forward(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		return err
 	}
-	if lastKnownLeader != s.node.ID() {
-		reply, err := s.node.SyncRPC(context.Background(), lastKnownLeader, reqBody)
-		if err != nil {
-			return err
-		}
-		return s.node.Reply(msg, reply)
+	reply, err := s.node.SyncRPC(context.Background(), lastKnownLeader, reqBody)
+	if err != nil {
+		return err
 	}
+	return s.node.Reply(msg, reply)
 }
 
 func (s *Server) handleRead(msg maelstrom.Message) error {
