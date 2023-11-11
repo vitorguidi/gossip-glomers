@@ -1,4 +1,4 @@
-package raft
+package main
 
 import "time"
 
@@ -59,7 +59,7 @@ type Raft struct {
 	commitedIndex []int
 }
 
-func NewRaft(nodeId string, commitC chan<- any, proposeC <-chan any, peers []string) *Raft {
+func NewRaft(commitC chan<- any, proposeC <-chan any) *Raft {
 	return &Raft{
 		commitC:         commitC,
 		proposeC:        proposeC,
@@ -69,9 +69,6 @@ func NewRaft(nodeId string, commitC chan<- any, proposeC <-chan any, peers []str
 		currentTerm:     1,
 		commitIndex:     0,
 		lastApplied:     0,
-		nextIndex:       make([]int, len(peers)), //next index to be appended on peers
-		commitedIndex:   make([]int, len(peers)), //last commited index in peers
-		nodeId:          nodeId,
-		peers:           peers,
+		//initialize nextIndex, commitedIndex, nodeID and peers only on jepsen init
 	}
 }

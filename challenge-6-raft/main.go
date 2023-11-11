@@ -1,4 +1,4 @@
-package raft
+package main
 
 import (
 	"context"
@@ -33,7 +33,7 @@ func newServer() *Server {
 	var maelstromNode = maelstrom.NewNode()
 	commitC := make(chan any)
 	proposeC := make(chan any)
-	raft := NewRaft(maelstromNode.ID(), commitC, proposeC, maelstromNode.NodeIDs())
+	raft := NewRaft(commitC, proposeC)
 	kvs := newKvs()
 	server := &Server{
 		node: maelstromNode,
@@ -41,6 +41,7 @@ func newServer() *Server {
 		kvs:  kvs,
 	}
 
+	maelstromNode.Handle("init", server.handleInit) //we only know node id after init msg, must tell raft after
 	maelstromNode.Handle("read", server.handleRead)
 	maelstromNode.Handle("write", server.handleWrite)
 	maelstromNode.Handle("cas", server.handleCAS)
@@ -65,9 +66,19 @@ func (s *Server) forward(msg maelstrom.Message) error {
 	return s.node.Reply(msg, reply)
 }
 
+func (s *Server) handleInit(_ maelstrom.Message) error {
+	peers := s.node.NodeIDs()
+	s.raft.nodeId = s.node.ID()
+	s.raft.lastKnownLeader = s.node.ID() //hand crafted for single node test
+	s.raft.peers = peers
+	s.raft.commitedIndex = make([]int, len(peers))
+	s.raft.nextIndex = make([]int, len(peers))
+	return nil
+}
+
 func (s *Server) handleRead(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	if lastKnownLeader == "" || lastKnownLeader == s.node.ID() {
+	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
 		return s.forward(msg)
 	}
 	var reqBody map[string]any
@@ -75,7 +86,10 @@ func (s *Server) handleRead(msg maelstrom.Message) error {
 		return err
 	}
 	key := reqBody["key"]
-	val, _ := s.kvs.read(key)
+	val, err := s.kvs.read(key)
+	if err != nil {
+		return err
+	}
 	return s.node.Reply(msg, map[string]any{
 		"value": val,
 		"type":  "read_ok",
@@ -84,7 +98,9 @@ func (s *Server) handleRead(msg maelstrom.Message) error {
 
 func (s *Server) handleWrite(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	if lastKnownLeader == "" || lastKnownLeader == s.node.ID() {
+	log.Errorf("current node = %s, last leader = %s", s.raft.nodeId, s.raft.lastKnownLeader)
+	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
+		log.Errorf("forwarding from node %s to last leader = %s", s.raft.nodeId, s.raft.lastKnownLeader)
 		return s.forward(msg)
 	}
 	var reqBody map[string]any
@@ -102,7 +118,7 @@ func (s *Server) handleWrite(msg maelstrom.Message) error {
 
 func (s *Server) handleCAS(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	if lastKnownLeader == "" || lastKnownLeader == s.node.ID() {
+	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
 		return s.forward(msg)
 	}
 	var reqBody map[string]any
