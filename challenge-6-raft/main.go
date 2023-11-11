@@ -49,7 +49,7 @@ func newServer() *Server {
 	return server
 }
 
-func (s *Server) handleRead(msg maelstrom.Message) error {
+func (s *Server) forward(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
 	if lastKnownLeader == "" {
 		return errors.New("unknown leader")
@@ -64,6 +64,17 @@ func (s *Server) handleRead(msg maelstrom.Message) error {
 			return err
 		}
 		return s.node.Reply(msg, reply)
+	}
+}
+
+func (s *Server) handleRead(msg maelstrom.Message) error {
+	lastKnownLeader := s.raft.lastKnownLeader
+	if lastKnownLeader == "" || lastKnownLeader == s.node.ID() {
+		return s.forward(msg)
+	}
+	var reqBody map[string]any
+	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+		return err
 	}
 	key := reqBody["key"]
 	val, _ := s.kvs.read(key)
@@ -75,19 +86,12 @@ func (s *Server) handleRead(msg maelstrom.Message) error {
 
 func (s *Server) handleWrite(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	if lastKnownLeader == "" {
-		return errors.New("unknown leader")
+	if lastKnownLeader == "" || lastKnownLeader == s.node.ID() {
+		return s.forward(msg)
 	}
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		return err
-	}
-	if lastKnownLeader != s.node.ID() {
-		reply, err := s.node.SyncRPC(context.Background(), lastKnownLeader, reqBody)
-		if err != nil {
-			return err
-		}
-		return s.node.Reply(msg, reply)
 	}
 	key := reqBody["key"]
 	val := reqBody["value"]
@@ -100,19 +104,12 @@ func (s *Server) handleWrite(msg maelstrom.Message) error {
 
 func (s *Server) handleCAS(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	if lastKnownLeader == "" {
-		return errors.New("unknown leader")
+	if lastKnownLeader == "" || lastKnownLeader == s.node.ID() {
+		return s.forward(msg)
 	}
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		return err
-	}
-	if lastKnownLeader != s.node.ID() {
-		reply, err := s.node.SyncRPC(context.Background(), lastKnownLeader, reqBody)
-		if err != nil {
-			return err
-		}
-		return s.node.Reply(msg, reply)
 	}
 	key := reqBody["key"]
 	from := reqBody["from"]
