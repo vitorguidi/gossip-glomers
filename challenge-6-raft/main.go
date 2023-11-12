@@ -50,7 +50,10 @@ func newServer() *Server {
 }
 
 func (s *Server) forward(msg maelstrom.Message) error {
+	s.raft.mut.Lock()
 	lastKnownLeader := s.raft.lastKnownLeader
+	s.raft.mut.Unlock()
+	ctx, _ := context.WithTimeout(context.Background(), rpcTimeout)
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		//log.Errorf("Failed to deserialize message in the server.forward method")
@@ -61,7 +64,7 @@ func (s *Server) forward(msg maelstrom.Message) error {
 		//	reqBody["type"], msg.Src, msg.Dest)
 		return errors.New("unknown leader")
 	}
-	reply, err := s.node.SyncRPC(context.Background(), lastKnownLeader, reqBody)
+	reply, err := s.node.SyncRPC(ctx, lastKnownLeader, reqBody)
 	if err != nil {
 		//log.Errorf("Tried to send a sync rpc from %s to last known leader %s, but failed: %s",
 		//	msg.Src, msg.Dest, err)
@@ -83,10 +86,14 @@ func (s *Server) handleInit(_ maelstrom.Message) error {
 }
 
 func (s *Server) handleRead(msg maelstrom.Message) error {
+	s.raft.mut.Lock()
 	lastKnownLeader := s.raft.lastKnownLeader
+	s.raft.mut.Unlock()
 	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
 		return s.forward(msg)
 	}
+	log.Errorf("Handling READ request at node %s", s.node.ID())
+
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		return err
@@ -103,12 +110,16 @@ func (s *Server) handleRead(msg maelstrom.Message) error {
 }
 
 func (s *Server) handleWrite(msg maelstrom.Message) error {
+	s.raft.mut.Lock()
 	lastKnownLeader := s.raft.lastKnownLeader
+	s.raft.mut.Unlock()
+
 	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
 		//log.Errorf("forwarding write message from node %s to last leader = %s",
 		//	s.raft.nodeId, s.raft.lastKnownLeader)
 		return s.forward(msg)
 	}
+	log.Errorf("Handling write request at node %s", s.node.ID())
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		log.Errorf("failed to deserialize message in the handleWrite method")
@@ -118,18 +129,24 @@ func (s *Server) handleWrite(msg maelstrom.Message) error {
 	val := reqBody["value"]
 	_ = s.kvs.write(key, val)
 
+	log.Errorf("Successfully handled write in node %s: %s", s.node.ID(), reqBody)
+
 	return s.node.Reply(msg, map[string]any{
 		"type": "write_ok",
 	})
 }
 
 func (s *Server) handleCAS(msg maelstrom.Message) error {
+	s.raft.mut.Lock()
 	lastKnownLeader := s.raft.lastKnownLeader
+	s.raft.mut.Unlock()
 	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
 		//log.Errorf("forwarding cas message from node %s to last leader = %s",
 		//	s.raft.nodeId, s.raft.lastKnownLeader)
 		return s.forward(msg)
 	}
+	log.Errorf("Handling CAS request at node %s: %s", s.node.ID(), msg.Body)
+
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		log.Errorf("failed to deserialize message in the handleCAS method")
@@ -141,8 +158,11 @@ func (s *Server) handleCAS(msg maelstrom.Message) error {
 
 	err := s.kvs.cas(key, from, to)
 	if err != nil {
+		log.Errorf("failed to handle cas in node %s: %s", s.node.ID(), err)
 		return err
 	}
+
+	log.Errorf("Successfully handled cas in node %s: %s", s.node.ID(), reqBody)
 
 	return s.node.Reply(msg, map[string]any{
 		"type": "cas_ok",
