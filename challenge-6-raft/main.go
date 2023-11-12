@@ -150,25 +150,28 @@ func (s *Server) handleCAS(msg maelstrom.Message) error {
 }
 
 func (s *Server) handleRequestVote(msg maelstrom.Message) error {
-	var reqBody RequestVoteRequest
+	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		log.Errorf("failed to deserialize message in the handleRequestVote method")
 		return err
 	}
-	log.Errorf("Received request vote request at node %s from node %s: %s", msg.Src, msg.Dest, reqBody)
-	respBody := s.raft.handleRequestVote(reqBody)
-	return s.node.Reply(msg, respBody)
+	log.Errorf("Received request vote request at node %s from node %s, content: %s", msg.Dest, msg.Src, reqBody)
+	respBody := s.raft.handleRequestVote(mapToRequestVoteRequest(reqBody))
+	log.Errorf("Node %s replying request vote of node %s, content: %s", msg.Dest, msg.Src, respBody)
+	return s.node.Reply(msg, requestVoteResponseToMap(respBody))
 }
 
 func (s *Server) handleAppendEntries(msg maelstrom.Message) error {
-	var reqBody AppendEntriesRequest
+	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 		log.Errorf("failed to deserialize message in the handleAppendEntries method")
 		return err
 	}
-	log.Errorf("Received append entries request at node %s from node %s: %s", msg.Src, msg.Dest, reqBody)
-	respBody := s.raft.handleAppendEntries(reqBody)
-	return s.node.Reply(msg, respBody)
+	log.Errorf("Received append entries request at node %s from node %s, content: %s", msg.Dest, msg.Src, reqBody)
+	respBody := s.raft.handleAppendEntries(mapToAppendEntriesRequest(reqBody))
+	//this works, receive end in raft does not
+	log.Errorf("Node %s replying append entries request of node %s, content: %s", msg.Dest, msg.Src, respBody)
+	return s.node.Reply(msg, appendEntriesResponseToMap(respBody))
 }
 
 func main() {
@@ -182,7 +185,8 @@ func main() {
 }
 
 func (s *Server) rpc(dst string, body map[string]any) (map[string]any, error) {
-	reply, err := s.node.SyncRPC(context.Background(), dst, body)
+	ctx, _ := context.WithTimeout(context.Background(), rpcTimeout)
+	reply, err := s.node.SyncRPC(ctx, dst, body)
 	if err != nil {
 		log.Errorf("failed to send sync rpc from %s to %s of type %s message in the rpc method: %s",
 			s.node.ID(), dst, body["type"], err)
