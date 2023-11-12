@@ -33,7 +33,7 @@ func appendEntriesRequestToMap(content AppendEntriesRequest) map[string]any {
 
 func mapToAppendEntriesRequest(content map[string]any) AppendEntriesRequest {
 	return AppendEntriesRequest{
-		entries:           content["entries"].([]any),
+		entries:           content["entries"].([]LogEntry),
 		prevLogTerm:       int(content["prev_log_term"].(float64)),
 		prevLogIndex:      int(content["prev_log_index"].(float64)),
 		leaderCommitIndex: int(content["leader_commit_index"].(float64)),
@@ -59,15 +59,19 @@ func mapToRequestVoteResponse(content map[string]any) RequestVoteResponse {
 
 func appendEntriesResponseToMap(content AppendEntriesResponse) map[string]any {
 	return map[string]any{
-		"type":    "append_entries_ok",
-		"term":    content.term,
-		"success": content.success,
+		"type":                      "append_entries_ok",
+		"term":                      content.term,
+		"success":                   content.success,
+		"followerLastCommitedIndex": content.followerLastCommitedIndex,
+		"follower_prev_log_index":   content.followerPrevLogIndex,
 	}
 }
 
 func mapToAppendEntriesResponse(content map[string]any) AppendEntriesResponse {
 	return AppendEntriesResponse{
-		term:    int(content["term"].(float64)),
-		success: content["success"].(bool),
+		term:                      int(content["term"].(float64)),
+		success:                   content["success"].(bool),
+		followerLastCommitedIndex: int(content["followerLastCommitedIndex"].(float64)),
+		followerPrevLogIndex:      int(content["follower_prev_log_index"].(float64)),
 	}
 }

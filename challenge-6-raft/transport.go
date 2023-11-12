@@ -21,11 +21,9 @@ type MaelstromTransport struct {
 
 func (t *MaelstromTransport) appendEntries(dest string, content AppendEntriesRequest) (AppendEntriesResponse, error) {
 	ctx, _ := context.WithTimeout(context.Background(), rpcTimeout)
-	reqBody := appendEntriesRequestToMap(content)
+	//reqBody := appendEntriesRequestToMap(content)
 
-	log.Printf("Sending append entries message from node %s to node %s, content: %s",
-		t.node.ID(), dest, content)
-	replyMsg, err := t.node.SyncRPC(ctx, dest, reqBody)
+	replyMsg, err := t.node.SyncRPC(ctx, dest, content)
 
 	if err != nil {
 		log.Errorf("Failed to sync send append entries rpc from %s to %s in raft maelstrom transport: %s",
@@ -34,7 +32,7 @@ func (t *MaelstromTransport) appendEntries(dest string, content AppendEntriesReq
 	}
 
 	replyBody := replyMsg.Body
-	var resp map[string]any
+	var resp AppendEntriesResponse
 	if err = json.Unmarshal(replyBody, &resp); err != nil {
 		log.Errorf("Failed to deserialize append entries response in raft maelstrom transport: %s", err)
 		return AppendEntriesResponse{}, err
@@ -42,16 +40,15 @@ func (t *MaelstromTransport) appendEntries(dest string, content AppendEntriesReq
 
 	//log.Errorf("Successfully got append entries response in node %s from %s in raft maelstrom transport: %s",
 	//	t.node.ID(), dest, resp)
-	return mapToAppendEntriesResponse(resp), nil
+	return resp, nil
 }
 
 func (t *MaelstromTransport) requestVote(dest string, content RequestVoteRequest) (RequestVoteResponse, error) {
 	ctx, _ := context.WithTimeout(context.Background(), rpcTimeout)
-	reqBody := requestVoteRequestToMap(content)
 
 	log.Printf("Sending request vote message from node %s to node %s, content: %s",
-		t.node.ID(), dest, reqBody)
-	replyMsg, err := t.node.SyncRPC(ctx, dest, reqBody)
+		t.node.ID(), dest, content)
+	replyMsg, err := t.node.SyncRPC(ctx, dest, content)
 
 	if err != nil {
 		log.Errorf("Failed to sync send request vote rpc from %s to %s in raft maelstrom transport: %s",
@@ -60,7 +57,7 @@ func (t *MaelstromTransport) requestVote(dest string, content RequestVoteRequest
 	}
 
 	replyBody := replyMsg.Body
-	var resp map[string]any
+	var resp RequestVoteResponse
 	if err = json.Unmarshal(replyBody, &resp); err != nil {
 		log.Errorf("Failed to deserialize request vote response in raft maelstrom transport")
 		return RequestVoteResponse{}, err
@@ -68,5 +65,5 @@ func (t *MaelstromTransport) requestVote(dest string, content RequestVoteRequest
 
 	log.Errorf("Successfully got request vote response in node %s from %s in raft maelstrom transport: %s",
 		t.node.ID(), dest, resp)
-	return mapToRequestVoteResponse(resp), nil
+	return resp, nil
 }
