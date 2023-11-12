@@ -31,9 +31,8 @@ func init() {
 
 func newServer() *Server {
 	var maelstromNode = maelstrom.NewNode()
-	commitC := make(chan any)
-	proposeC := make(chan any)
-	raft := NewRaft(commitC, proposeC)
+	raftTransport := MaelstromTransport{node: maelstromNode}
+	raft := NewRaft(&raftTransport)
 	kvs := newKvs()
 	server := &Server{
 		node: maelstromNode,
@@ -52,15 +51,20 @@ func newServer() *Server {
 
 func (s *Server) forward(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	if lastKnownLeader == "" {
-		return errors.New("unknown leader")
-	}
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+		//log.Errorf("Failed to deserialize message in the server.forward method")
 		return err
+	}
+	if lastKnownLeader == "" {
+		//log.Errorf("Tried to forward a %s message from %s to %s to a leader, but failed: no known leader",
+		//	reqBody["type"], msg.Src, msg.Dest)
+		return errors.New("unknown leader")
 	}
 	reply, err := s.node.SyncRPC(context.Background(), lastKnownLeader, reqBody)
 	if err != nil {
+		//log.Errorf("Tried to send a sync rpc from %s to last known leader %s, but failed: %s",
+		//	msg.Src, msg.Dest, err)
 		return err
 	}
 	return s.node.Reply(msg, reply)
@@ -69,10 +73,12 @@ func (s *Server) forward(msg maelstrom.Message) error {
 func (s *Server) handleInit(_ maelstrom.Message) error {
 	peers := s.node.NodeIDs()
 	s.raft.nodeId = s.node.ID()
-	s.raft.lastKnownLeader = s.node.ID() //hand crafted for single node test
+	s.raft.lastKnownLeader = ""
+	s.raft.state = follower
 	s.raft.peers = peers
 	s.raft.commitedIndex = make([]int, len(peers))
 	s.raft.nextIndex = make([]int, len(peers))
+	s.raft.loop()
 	return nil
 }
 
@@ -98,13 +104,14 @@ func (s *Server) handleRead(msg maelstrom.Message) error {
 
 func (s *Server) handleWrite(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
-	log.Errorf("current node = %s, last leader = %s", s.raft.nodeId, s.raft.lastKnownLeader)
 	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
-		log.Errorf("forwarding from node %s to last leader = %s", s.raft.nodeId, s.raft.lastKnownLeader)
+		//log.Errorf("forwarding write message from node %s to last leader = %s",
+		//	s.raft.nodeId, s.raft.lastKnownLeader)
 		return s.forward(msg)
 	}
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+		log.Errorf("failed to deserialize message in the handleWrite method")
 		return err
 	}
 	key := reqBody["key"]
@@ -119,10 +126,13 @@ func (s *Server) handleWrite(msg maelstrom.Message) error {
 func (s *Server) handleCAS(msg maelstrom.Message) error {
 	lastKnownLeader := s.raft.lastKnownLeader
 	if lastKnownLeader == "" || lastKnownLeader != s.node.ID() {
+		//log.Errorf("forwarding cas message from node %s to last leader = %s",
+		//	s.raft.nodeId, s.raft.lastKnownLeader)
 		return s.forward(msg)
 	}
 	var reqBody map[string]any
 	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+		log.Errorf("failed to deserialize message in the handleCAS method")
 		return err
 	}
 	key := reqBody["key"]
@@ -140,11 +150,25 @@ func (s *Server) handleCAS(msg maelstrom.Message) error {
 }
 
 func (s *Server) handleRequestVote(msg maelstrom.Message) error {
-	return nil
+	var reqBody RequestVoteRequest
+	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+		log.Errorf("failed to deserialize message in the handleRequestVote method")
+		return err
+	}
+	log.Errorf("Received request vote request at node %s from node %s: %s", msg.Src, msg.Dest, reqBody)
+	respBody := s.raft.handleRequestVote(reqBody)
+	return s.node.Reply(msg, respBody)
 }
 
 func (s *Server) handleAppendEntries(msg maelstrom.Message) error {
-	return nil
+	var reqBody AppendEntriesRequest
+	if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+		log.Errorf("failed to deserialize message in the handleAppendEntries method")
+		return err
+	}
+	log.Errorf("Received append entries request at node %s from node %s: %s", msg.Src, msg.Dest, reqBody)
+	respBody := s.raft.handleAppendEntries(reqBody)
+	return s.node.Reply(msg, respBody)
 }
 
 func main() {
@@ -160,10 +184,13 @@ func main() {
 func (s *Server) rpc(dst string, body map[string]any) (map[string]any, error) {
 	reply, err := s.node.SyncRPC(context.Background(), dst, body)
 	if err != nil {
+		log.Errorf("failed to send sync rpc from %s to %s of type %s message in the rpc method: %s",
+			s.node.ID(), dst, body["type"], err)
 		return nil, err
 	}
 	var resBody map[string]any
 	if err = json.Unmarshal(reply.Body, &resBody); err != nil {
+		log.Errorf("failed to deserialize message in the rpc method")
 		return nil, err
 	}
 	return resBody, nil
